@@ -1,0 +1,10 @@
+{
+  "name": "chatsync-root",
+  "version": "1.0.0",
+  "description": "Root workspace and execution scripts for ChatSync",
+  "main": "start.js",
+  "scripts": {
+    "start": "node start.js",
+    "install-all": "npm install --prefix backend && npm install --prefix frontend"
+  }
+}
