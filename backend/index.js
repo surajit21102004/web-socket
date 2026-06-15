@@ -192,26 +192,34 @@ io.on('connection', (socket) => {
 
     // Add member if not already in group
     const isMember = group.members.some(m => m.username === user.username);
+    let shouldBroadcastJoin = false;
+
     if (!isMember) {
       group.members.push({ username: user.username, avatar: user.avatar, socketId: socket.id });
+      shouldBroadcastJoin = true;
     } else {
-      // Update socket ID if rejoining
+      // Update socket ID if rejoining (reconnection)
       const memberIndex = group.members.findIndex(m => m.username === user.username);
-      group.members[memberIndex].socketId = socket.id;
+      if (group.members[memberIndex].socketId !== socket.id) {
+        group.members[memberIndex].socketId = socket.id;
+        shouldBroadcastJoin = true; // only notify if socket changed (reconnection)
+      }
     }
 
     user.currentRoom = groupCode;
     socket.join(`group:${groupCode}`);
 
-    // Notify others in room
-    socket.to(`group:${groupCode}`).emit('user-joined', {
-      username: user.username,
-      avatar: user.avatar,
-      members: group.members
-    });
+    // Only notify others in room if it's a new join or reconnect
+    if (shouldBroadcastJoin) {
+      socket.to(`group:${groupCode}`).emit('user-joined', {
+        username: user.username,
+        avatar: user.avatar,
+        members: group.members
+      });
+    }
 
     socket.emit('group-details', group);
-    console.log(`${user.username} joined group ${groupCode}`);
+    console.log(`${user.username} joined group ${groupCode} (shouldBroadcast: ${shouldBroadcastJoin})`);
   });
 
   // Leave Group
@@ -245,6 +253,7 @@ io.on('connection', (socket) => {
 
     const message = {
       id: crypto.randomUUID(),
+      groupCode: groupCode, // Include groupCode so client can filter/route
       sender: user.username,
       avatar: user.avatar,
       text: text || '',

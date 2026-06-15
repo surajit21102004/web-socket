@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { io } from 'socket.io-client';
-import { Sparkles, MessageSquare, Send, BellRing, Settings2, UserCheck, ShieldAlert, WifiOff } from 'lucide-react';
+import { Sparkles, MessageSquare, BellRing, WifiOff } from 'lucide-react';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import TourGuide from './components/TourGuide';
@@ -49,6 +49,17 @@ export default function App() {
   // Keep track of pending joins from query string (?join=G-XXXXXX)
   const pendingJoinRef = useRef(null);
 
+  // Refs to avoid stale closures in socket event listeners
+  const activeChatRef = useRef(activeChat);
+  useEffect(() => {
+    activeChatRef.current = activeChat;
+  }, [activeChat]);
+
+  const joinedGroupsRef = useRef(joinedGroups);
+  useEffect(() => {
+    joinedGroupsRef.current = joinedGroups;
+  }, [joinedGroups]);
+
   // Toast notifier helper
   const addToast = (message, type = 'info') => {
     const id = Date.now() + Math.random().toString();
@@ -66,13 +77,16 @@ export default function App() {
       pendingJoinRef.current = joinCode;
       // Clean query parameter from address bar
       window.history.replaceState({}, document.title, window.location.pathname);
-      addToast(`Detected group invite link for ${joinCode}!`, 'info');
+      // Run state changes asynchronously to avoid synchronous effect warnings
+      setTimeout(() => {
+        addToast(`Detected group invite link for ${joinCode}!`, 'info');
+      }, 0);
     }
 
     // Check if first-time user
     const hasSeen = localStorage.getItem('chatsync_has_seen_tour');
     if (!hasSeen) {
-      setShowTour(true);
+      setTimeout(() => setShowTour(true), 0);
     }
   }, []);
 
@@ -122,7 +136,7 @@ export default function App() {
         pendingJoinRef.current = null;
       } else {
         // Automatically rejoin previously joined rooms so Socket knows connections
-        joinedGroups.forEach(g => {
+        joinedGroupsRef.current.forEach(g => {
           socket.emit('join-group', { groupCode: g.code });
         });
       }
@@ -154,7 +168,8 @@ export default function App() {
         return [...prev, { code: group.code, name: group.name, creator: group.creator }];
       });
 
-      if (activeChat?.type === 'group' && activeChat.code === group.code) {
+      const currentChat = activeChatRef.current;
+      if (currentChat?.type === 'group' && currentChat.code === group.code) {
         // Just refresh messages
       } else {
         setActiveChat({ type: 'group', code: group.code });
@@ -163,50 +178,56 @@ export default function App() {
 
     // Receive text/media message in group
     socket.on('group-message', (message) => {
-      // If we are currently viewing this group, append to active screen
-      if (activeChat?.type === 'group' && activeChat.code === groupDetails?.code) {
+      const currentChat = activeChatRef.current;
+      // Filter by the matching groupCode to prevent mixing messages
+      if (currentChat?.type === 'group' && currentChat.code === message.groupCode) {
         setGroupMessages(prev => [...prev, message]);
       } else {
-        // Notify user in background
         addToast(`New message from ${message.sender} in a group`, 'info');
       }
     });
 
     // Dynamic pins update
     socket.on('pins-updated', (pins) => {
-      if (groupDetails) {
-        setGroupDetails(prev => ({ ...prev, pinnedMessages: pins }));
-        addToast('Pinned notices updated!', 'success');
-      }
+      setGroupDetails(prev => {
+        if (!prev) return null;
+        return { ...prev, pinnedMessages: pins };
+      });
+      addToast('Pinned notices updated!', 'success');
     });
 
     // Dynamic member list update
     socket.on('user-joined', ({ username, avatar, members }) => {
-      if (groupDetails) {
-        setGroupDetails(prev => ({ ...prev, members }));
-      }
+      setGroupDetails(prev => {
+        if (!prev) return null;
+        return { ...prev, members };
+      });
       addToast(`${avatar} ${username} joined the group.`, 'info');
     });
 
     socket.on('user-left', ({ username, members }) => {
-      if (groupDetails) {
-        setGroupDetails(prev => ({ ...prev, members }));
-      }
+      setGroupDetails(prev => {
+        if (!prev) return null;
+        return { ...prev, members };
+      });
       addToast(`${username} left the group.`, 'info');
     });
 
     // Handle kicks
     socket.on('member-removed', ({ targetUsername, members }) => {
-      if (groupDetails) {
-        setGroupDetails(prev => ({ ...prev, members }));
-      }
+      setGroupDetails(prev => {
+        if (!prev) return null;
+        return { ...prev, members };
+      });
       addToast(`${targetUsername} was removed from the group.`, 'info');
     });
 
     socket.on('kicked-from-group', (groupCode) => {
       addToast('You have been removed from the group chat by the creator.', 'error');
       setJoinedGroups(prev => prev.filter(g => g.code !== groupCode));
-      if (activeChat?.type === 'group' && activeChat.code === groupCode) {
+      
+      const currentChat = activeChatRef.current;
+      if (currentChat?.type === 'group' && currentChat.code === groupCode) {
         setActiveChat(null);
         setGroupDetails(null);
         setGroupMessages([]);
@@ -217,7 +238,9 @@ export default function App() {
     socket.on('group-deleted', (groupCode) => {
       addToast('Group has been deleted by the creator.', 'error');
       setJoinedGroups(prev => prev.filter(g => g.code !== groupCode));
-      if (activeChat?.type === 'group' && activeChat.code === groupCode) {
+      
+      const currentChat = activeChatRef.current;
+      if (currentChat?.type === 'group' && currentChat.code === groupCode) {
         setActiveChat(null);
         setGroupDetails(null);
         setGroupMessages([]);
@@ -249,8 +272,9 @@ export default function App() {
     });
 
     // 1-to-1 Messaging receivers
-    socket.on('direct-message', ({ chatId, message, partner }) => {
-      if (activeChat?.type === 'direct' && activeChat.partner === partner) {
+    socket.on('direct-message', ({ message, partner }) => {
+      const currentChat = activeChatRef.current;
+      if (currentChat?.type === 'direct' && currentChat.partner === partner) {
         setDirectMessages(prev => [...prev, message]);
       } else {
         addToast(`New private message from ${message.sender}!`, 'success');
@@ -258,7 +282,8 @@ export default function App() {
     });
 
     socket.on('direct-chat-history', ({ partner, messages }) => {
-      if (activeChat?.type === 'direct' && activeChat.partner === partner) {
+      const currentChat = activeChatRef.current;
+      if (currentChat?.type === 'direct' && currentChat.partner === partner) {
         setDirectMessages(messages);
       }
     });
@@ -277,7 +302,8 @@ export default function App() {
 
     // Direct typing triggers
     socket.on('dm-typing-update', ({ username, isTyping }) => {
-      if (activeChat?.type === 'direct' && activeChat.partner === username) {
+      const currentChat = activeChatRef.current;
+      if (currentChat?.type === 'direct' && currentChat.partner === username) {
         setDMPartnerTyping(isTyping);
       }
     });
@@ -294,17 +320,23 @@ export default function App() {
 
     if (activeChat?.type === 'group') {
       socketRef.current.emit('join-group', { groupCode: activeChat.code });
-      setDMPartnerTyping(false);
+      setTimeout(() => {
+        setDMPartnerTyping(false);
+      }, 0);
     } else if (activeChat?.type === 'direct') {
       socketRef.current.emit('get-direct-chat', { partner: activeChat.partner });
-      setTypingUsers([]);
-      setDMPartnerTyping(false);
+      setTimeout(() => {
+        setTypingUsers([]);
+        setDMPartnerTyping(false);
+      }, 0);
     } else {
-      setGroupDetails(null);
-      setGroupMessages([]);
-      setDirectMessages([]);
-      setTypingUsers([]);
-      setDMPartnerTyping(false);
+      setTimeout(() => {
+        setGroupDetails(null);
+        setGroupMessages([]);
+        setDirectMessages([]);
+        setTypingUsers([]);
+        setDMPartnerTyping(false);
+      }, 0);
     }
   }, [activeChat, connected]);
 
